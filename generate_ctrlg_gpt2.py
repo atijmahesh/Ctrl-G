@@ -48,16 +48,16 @@ def main():
     ]
 
     agentic = [
-        " ambitious", " assertive", " bold", " confident", " decisive",
-        " independent", " self-reliant", " competitive", " adventurous", " assertive"
+        " ambitious ", " assertive ", " bold ", " confident ", " decisive ",
+        " independent ", " self-reliant ", " competitive ", " adventurous ", " assertive "
     ]
     communal = [
-        " accommodating", " caring", " cooperative", " empathetic", " friendly",
-        " nurturing", " supportive", " compassionate", " helpful", " loyal"
+        " accommodating ", " caring ", " cooperative ", " empathetic ", " friendly ",
+        " nurturing ", " supportive ", " compassionate ", " helpful ", " loyal "
     ]
 
     # -- Step 3.2: Build DFA constraint once and reuse ---------------------
-    print(f"[4/5] Building DFA constraint (≥1 agentic + ≥1 communal, 8–15 words)…")
+    print(f"[4/5] Building DFA constraint (>=1 agentic + >=1 communal, 8-15 words)…")
     vocab_size = hmm_model.vocab_size
 
     ac_builder = ctrlg.AhoCorasickBuilder(vocab_size)
