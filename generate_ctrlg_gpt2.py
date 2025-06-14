@@ -7,7 +7,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessorLis
 
 def main():
     # -- Step 3.1: Load model + HMM ------------------------------------------
-    print("[1/5] Setting up device and environment…")
+    print("[1/5] Setting up device and environment...")
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
