@@ -102,9 +102,12 @@ def main():
                 outputs = base_model.generate(
                     input_ids=torch.tensor([pid], device=device),
                     do_sample=True,
-                    top_p=0.95,
-                    temperature=1.0,
-                    num_beams=1,
+                    top_k=50,                         # mix in Top-K sampling
+                    top_p=0.95,                       # nucleus sampling
+                    temperature=1.2,                  # soften distribution
+                    repetition_penalty=1.2,           # discourage exact repeats
+                    no_repeat_ngram_size=2,           # ban 2-gram repeats
+                    num_beams=1,                      # disable beam search
                     num_return_sequences=bs,
                     min_new_tokens=1,
                     max_new_tokens=15,
