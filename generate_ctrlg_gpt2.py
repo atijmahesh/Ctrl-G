@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 import os
+
+os.environ["CUDA_VISIBLE_DEVICES"]    = "0"
+os.environ["TOKENIZERS_PARALLELISM"]  = "false"
+os.environ["TORCHINDUCTOR_DISABLE"]   = "1"
+os.environ["INDUCTOR_DISABLE_TRITON"] = "1"
+
 import torch
 import ctrlg
 import csv
 from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessorList
 
-import os
-
-# ─── Disable Triton for Inductor ─────────────────────────────────────────────
-os.environ["CUDA_VISIBLE_DEVICES"]    = "0"
-os.environ["TOKENIZERS_PARALLELISM"]  = "false"
-os.environ["TORCHINDUCTOR_DISABLE"]   = "1"
-os.environ["INDUCTOR_DISABLE_TRITON"] = "1"
 
 def main():
     # -- Step 3.1: Load model + HMM ------------------------------------------
