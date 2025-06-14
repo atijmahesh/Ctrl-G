@@ -57,7 +57,7 @@ def main():
     ]
 
     # -- Step 3.2: Build DFA constraint once and reuse ---------------------
-    print(f"[4/5] Building DFA constraint (>=1 agentic + >=1 communal, 8-15 words)…")
+    print(f"[4/5] Building DFA constraint (>=1 agentic + >=1 communal, 8-15 words)...")
     vocab_size = hmm_model.vocab_size
 
     ac_builder = ctrlg.AhoCorasickBuilder(vocab_size)
@@ -77,7 +77,7 @@ def main():
 
     # -- Step 3.3 & 3.4: Sampling + write CSV -------------------------------
     OUTPUT_CSV = "ctrlg_gpt2_step3.csv"
-    print(f"[5/5] Generating samples and writing to {OUTPUT_CSV}…")
+    print(f"[5/5] Generating samples and writing to {OUTPUT_CSV}...")
     with open(OUTPUT_CSV, "w", newline="", encoding="utf8") as f:
         writer = csv.DictWriter(f, fieldnames=["occupation","sample","label"])
         writer.writeheader()
@@ -108,7 +108,7 @@ def main():
 
             while collected < total:
                 bs = min(batch_size, total - collected)
-                print(f"       sampling batch {collected+1}–{collected+bs}…")
+                print(f"       sampling batch {collected+1}-{collected+bs}...")
                 outputs = base_model.generate(
                     input_ids=torch.tensor([prompt_ids], device=device),
                     do_sample=True,
