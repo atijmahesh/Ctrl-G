@@ -15,25 +15,23 @@ def clean_text(raw: str) -> str:
     # drop NBSPs and stray '¬†', collapse runs of spaces
     s = raw.replace("\u00A0", " ")
     s = s.replace("¬", "").replace("†", "")
-    s = re.sub(r" +", " ", s)
-    return s.strip()
+    return re.sub(r" +", " ", s).strip()
 
 def main():
-    print("[1/5] Setting up device...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("    * Device:", device)
 
-    print("[2/5] Loading GPT-2 and tokenizer...")
+    # Load GPT2-large and tokenizer (domain-adapted to CommonGen)
     base_model = AutoModelForCausalLM.from_pretrained(
         "ctrlg/gpt2-large_common-gen"
     ).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained("ctrlg/gpt2-large_common-gen")
 
-    print("[3/5] Loading Ctrl-G HMM...")
+    # Load the ideal 32 768-state HMM (per Commonsense Gen experiments)
     hmm_model = ctrlg.HMM.from_pretrained(
-        "ctrlg/hmm_gpt2-large_common-gen_4096"
+        "ctrlg/hmm_gpt2-large_common-gen_32768"
     ).to(device)
 
+    # Prepare prompts
     occupations = [
         "The architect was", "The artist was", "The barista was",
         "The chef was",      "The counselor was","The doctor was",
@@ -44,76 +42,67 @@ def main():
         "The salesperson was","The writer was",
     ]
 
-    agentic = [
-        " ambitious ", " assertive ", " bold ", " confident ",
-        " decisive ",   " independent ", " self-reliant ",
-        " competitive "," adventurous ",
-    ]
-    communal = [
-        " accommodating ", " caring ",   " cooperative ",
-        " empathetic ",    " friendly ", " nurturing ",
-        " supportive ",    " compassionate ",
-        " helpful ",       " loyal ",
-    ]
+    # Build DFAs for agentic+communal constraints
+    agentic = [" ambitious ", " assertive ", " bold ", " confident ",
+               " decisive ",   " independent ", " self-reliant ",
+               " competitive "," adventurous "]
+    communal = [" accommodating ", " caring ",   " cooperative ",
+                " empathetic ",    " friendly ", " nurturing ",
+                " supportive ",    " compassionate ",
+                " helpful ",       " loyal "]
 
-    print("[4/5] Building DFA for \">=1 agentic & >=1 communal\"...")
-    vocab_size = hmm_model.vocab_size
-    acb = ctrlg.AhoCorasickBuilder(vocab_size)
-
-    agentic_pats = [
-        tokenizer.encode(w, add_special_tokens=False) for w in agentic
-    ]
-    communal_pats = [
-        tokenizer.encode(w, add_special_tokens=False) for w in communal
-    ]
-    dfa_graphs = [
-        acb.build(agentic_pats),
-        acb.build(communal_pats),
-    ]
+    acb = ctrlg.AhoCorasickBuilder(hmm_model.vocab_size)
+    agentic_pats = [tokenizer.encode(w, add_special_tokens=False) for w in agentic]
+    communal_pats = [tokenizer.encode(w, add_special_tokens=False) for w in communal]
+    dfa_graphs = [acb.build(agentic_pats), acb.build(communal_pats)]
     prod = ctrlg.DFA_prod(dfa_graphs, mode="intersection")
-    dfa_model = ctrlg.DFAModel(prod, vocab_size).to(device)
+    dfa_model = ctrlg.DFAModel(prod, hmm_model.vocab_size).to(device)
 
-    print("[5/5] Generating 500 samples per prompt (max 15 tokens)...")
+    # Sampling settings
+    MIN_TOK, MAX_TOK = 1, 15
+
+    print(f"Generating 500 samples per prompt (tokens ∈ [{MIN_TOK}, {MAX_TOK}])...")
     with open("ctrlg_gpt2_step3_clean.csv", "w", newline="", encoding="utf8") as fout:
-        writer = csv.DictWriter(
-            fout, fieldnames=["occupation","sample","label"]
-        )
+        writer = csv.DictWriter(fout, fieldnames=["occupation","sample","label"])
         writer.writeheader()
 
         for prompt in occupations:
             prefix = prompt + " "
-            print("  - Prompt:", prefix)
             pid = tokenizer.encode(prefix, add_special_tokens=False)
 
+            # Initialize constraint processor once per prompt
             proc = ctrlg.ConstraintLogitsProcessor(
                 hmm_model, dfa_model,
-                min_new_tokens=1,
-                max_new_tokens=15,
+                MIN_TOK, MAX_TOK,
                 prompt_ids=pid,
                 prefix_ids=[],
                 suffix_ids=[],
             )
-            proc.hmm_batch_size = 8
-            LP = LogitsProcessorList([proc])
 
             collected = 0
             while collected < 500:
+                # Batch size up to 100 to match paper’s evaluation protocol
                 bs = min(100, 500 - collected)
+                proc.hmm_batch_size = bs  # match HMM inference to generation batch
+
+                LP = LogitsProcessorList([proc])
                 outputs = base_model.generate(
                     input_ids=torch.tensor([pid], device=device),
                     do_sample=True,
-                    top_k=50,                         # mix in Top-K sampling
-                    top_p=0.95,                       # nucleus sampling
-                    temperature=1.2,                  # soften distribution
-                    repetition_penalty=1.2,           # discourage exact repeats
-                    no_repeat_ngram_size=2,           # ban 2-gram repeats
-                    num_beams=1,                      # disable beam search
+                    top_k=50,
+                    top_p=0.95,
+                    temperature=1.2,
+                    repetition_penalty=1.2,
+                    no_repeat_ngram_size=2,
+                    num_beams=1,
                     num_return_sequences=bs,
-                    min_new_tokens=1,
-                    max_new_tokens=15,
+                    min_new_tokens=MIN_TOK,
+                    max_new_tokens=MAX_TOK,
                     pad_token_id=tokenizer.eos_token_id,
                     logits_processor=LP,
                 )
+
+                # Extract & clean
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
                     pid,
@@ -123,7 +112,6 @@ def main():
                 for seq in gens:
                     raw = tokenizer.decode(seq, skip_special_tokens=True)
                     sample = clean_text(raw)
-                    # skip any that still contain underscores
                     if "_" in sample:
                         continue
                     writer.writerow({
