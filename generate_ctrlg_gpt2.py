@@ -32,7 +32,7 @@ def main():
     hmm = ctrlg.HMM.from_pretrained(
         "ctrlg/hmm_gpt2-large_common-gen_4096"
     ).to(device)
-    print("HMM states:", hmm.num_states)
+    print("HMM loaded")
 
     # Build DFA
     patterns_agentic = [" ambitious ", " assertive ", " bold ", " confident ",
