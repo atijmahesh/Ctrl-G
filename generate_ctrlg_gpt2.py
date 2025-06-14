@@ -24,13 +24,13 @@ def main():
 
     print("Loading GPT2 model and tokenizer")
     model = AutoModelForCausalLM.from_pretrained(
-        "ctrlg/gpt2-large_common-gen_4096"
+        "ctrlg/gpt2-large_common-gen"
     ).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained("ctrlg/gpt2-large_common-gen")
 
     print("Loading HMM with 4096 states")
     hmm = ctrlg.HMM.from_pretrained(
-        "ctrlg/hmm_gpt2-large_common-gen_32768"
+        "ctrlg/hmm_gpt2-large_common-gen_4096"
     ).to(device)
     print("HMM states:", hmm.num_states)
 
