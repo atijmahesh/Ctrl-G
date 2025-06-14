@@ -5,6 +5,14 @@ import ctrlg
 import csv
 from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessorList
 
+import os
+
+# ─── Disable Triton for Inductor ─────────────────────────────────────────────
+os.environ["CUDA_VISIBLE_DEVICES"]    = "0"
+os.environ["TOKENIZERS_PARALLELISM"]  = "false"
+os.environ["TORCHINDUCTOR_DISABLE"]   = "1"
+os.environ["INDUCTOR_DISABLE_TRITON"] = "1"
+
 def main():
     # -- Step 3.1: Load model + HMM ------------------------------------------
     print("[1/5] Setting up device and environment...")
@@ -84,7 +92,7 @@ def main():
 
         for prompt in occupations:
             prompt_text = prompt + " "
-            print(f"   • Prompt: \"{prompt_text}\"")
+            print(f"Prompt: \"{prompt_text}\"")
             prompt_ids = tokenizer.encode(prompt_text, add_special_tokens=False)
 
             min_new_tokens = 8
@@ -108,7 +116,7 @@ def main():
 
             while collected < total:
                 bs = min(batch_size, total - collected)
-                print(f"       sampling batch {collected+1}-{collected+bs}...")
+                print(f"sampling batch {collected+1}-{collected+bs}...")
                 outputs = base_model.generate(
                     input_ids=torch.tensor([prompt_ids], device=device),
                     do_sample=True,
