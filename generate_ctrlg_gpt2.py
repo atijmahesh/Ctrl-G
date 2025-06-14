@@ -6,7 +6,7 @@ import torch
 import ctrlg
 from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessorList
 
-# ─── disable Triton/Inductor optimizations (for your older GPUs) ───────────
+# disable Triton/Inductor optimizations for older GPUs
 os.environ["TORCHINDUCTOR_DISABLE"]   = "1"
 os.environ["INDUCTOR_DISABLE_TRITON"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"]  = "false"
@@ -34,7 +34,6 @@ def main():
         "ctrlg/hmm_gpt2-large_common-gen_4096"
     ).to(device)
 
-    # ── your 20 neutral occupation prefixes ────────────────────────────────
     occupations = [
         "The architect was", "The artist was", "The barista was",
         "The chef was",      "The counselor was","The doctor was",
@@ -45,7 +44,6 @@ def main():
         "The salesperson was","The writer was",
     ]
 
-    # ── your expanded synonym lists ──────────────────────────────────────
     agentic = [
         " ambitious ", " assertive ", " bold ", " confident ",
         " decisive ",   " independent ", " self-reliant ",
@@ -58,7 +56,7 @@ def main():
         " helpful ",       " loyal ",
     ]
 
-    print("[4/5] Building DFA for “>=1 agentic & >=1 communal”…")
+    print("[4/5] Building DFA for \">=1 agentic & >=1 communal\"...")
     vocab_size = hmm_model.vocab_size
     acb = ctrlg.AhoCorasickBuilder(vocab_size)
 
@@ -75,7 +73,7 @@ def main():
     prod = ctrlg.DFA_prod(dfa_graphs, mode="intersection")
     dfa_model = ctrlg.DFAModel(prod, vocab_size).to(device)
 
-    print("[5/5] Generating 500 samples per prompt (max 15 tokens)…")
+    print("[5/5] Generating 500 samples per prompt (max 15 tokens)...")
     with open("ctrlg_gpt2_step3_clean.csv", "w", newline="", encoding="utf8") as fout:
         writer = csv.DictWriter(
             fout, fieldnames=["occupation","sample","label"]
@@ -84,12 +82,12 @@ def main():
 
         for prompt in occupations:
             prefix = prompt + " "
-            print("  •", prefix)
+            print("  - Prompt:", prefix)
             pid = tokenizer.encode(prefix, add_special_tokens=False)
 
             proc = ctrlg.ConstraintLogitsProcessor(
                 hmm_model, dfa_model,
-                min_new_tokens=1,    # just force at least something
+                min_new_tokens=1,
                 max_new_tokens=15,
                 prompt_ids=pid,
                 prefix_ids=[],
@@ -101,7 +99,7 @@ def main():
             collected = 0
             while collected < 500:
                 bs = min(100, 500 - collected)
-                out = base_model.generate(
+                outputs = base_model.generate(
                     input_ids=torch.tensor([pid], device=device),
                     do_sample=True,
                     top_p=0.95,
@@ -114,7 +112,7 @@ def main():
                     logits_processor=LP,
                 )
                 gens = ctrlg.extract_generated_ids(
-                    out.tolist(),
+                    outputs.tolist(),
                     pid,
                     suffix_ids=[],
                     eos_token_id=tokenizer.eos_token_id
@@ -122,8 +120,7 @@ def main():
                 for seq in gens:
                     raw = tokenizer.decode(seq, skip_special_tokens=True)
                     sample = clean_text(raw)
-                    # optionally skip any stray blanks—but with no word‐count DFA
-                    # you should rarely see underscores now
+                    # skip any that still contain underscores
                     if "_" in sample:
                         continue
                     writer.writerow({
