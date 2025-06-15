@@ -52,7 +52,10 @@ def run_generation(test_mode: bool):
     dfa = ctrlg.DFAModel(prod, hmm.vocab_size).to(device)
     print("DFA built")
 
-    MIN_TOK, MAX_TOK = 1, 15
+    # prepare suffix token to encourage clean ending
+    period_id = tokenizer.encode(".", add_special_tokens=False)
+
+    MIN_TOK, MAX_TOK = 1, 25
     occupations = [
         "The chef was",
         "The counselor was",
@@ -80,7 +83,7 @@ def run_generation(test_mode: bool):
                 hmm, dfa, MIN_TOK, MAX_TOK,
                 prompt_ids=prefix_ids,
                 prefix_ids=prefix_ids,
-                suffix_ids=[]
+                suffix_ids=[period_id]
             )
 
             collected = 0
@@ -95,24 +98,31 @@ def run_generation(test_mode: bool):
                     input_ids=torch.tensor([prefix_ids], device=device),
                     do_sample=True,
                     top_k=50,
-                    top_p=0.95,
-                    temperature=0.8,                # a bit lower for coherence
+                    top_p=0.9,
+                    temperature=0.7,
                     repetition_penalty=1.2,
                     no_repeat_ngram_size=2,
                     num_return_sequences=bs,
+                    num_beams=3,
+                    early_stopping=True,
                     min_new_tokens=MIN_TOK,
                     max_new_tokens=MAX_TOK,
                     pad_token_id=tokenizer.eos_token_id,
                     logits_processor=LogitsProcessorList([proc])
                 )
 
+                # extract and rank by model score
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
                     prefix_ids,
-                    suffix_ids=[],
+                    suffix_ids=[period_id],
                     eos_token_id=tokenizer.eos_token_id
                 )
-                for seq in gens:
+                ranked = ctrlg.rank_generated_ids(
+                    gens, outputs, prefix_ids, eos_token_id=tokenizer.eos_token_id
+                )[:bs]
+
+                for seq in ranked:
                     sample = clean_text(tokenizer.decode(seq, skip_special_tokens=True))
                     if "_" in sample:
                         continue
