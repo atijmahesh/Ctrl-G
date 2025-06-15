@@ -13,7 +13,7 @@ os.environ["INDUCTOR_DISABLE_TRITON"]  = "1"
 os.environ["TOKENIZERS_PARALLELISM"]   = "false"
 
 def clean_text(raw: str) -> str:
-    # Remove NBSPs and stray chars, collapse spaces
+    # Remove nonbreaking spaces and stray chars, collapse spaces
     s = raw.replace("\u00A0", " ")
     s = s.replace("¬", "").replace("†", "")
     return re.sub(r" +", " ", s).strip()
@@ -30,6 +30,9 @@ def run_generation(test_mode: bool):
     ).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained("ctrlg/gpt2-large_common-gen")
 
+    # optional: clear CUDA cache
+    torch.cuda.empty_cache()
+
     # 2. Load HMM
     print("Loading HMM with 4096 states")
     hmm = ctrlg.HMM.from_pretrained(
@@ -37,20 +40,23 @@ def run_generation(test_mode: bool):
     ).to(device)
     print("HMM loaded")
 
-    # 3. Build DFA for agentic + communal whole-word constraints
+    # 3. Build DFA for whole-word agentic + communal constraints
     print("Building DFA for agentic + communal constraints only")
-    vocab_size = hmm.vocab_size
-    acb = ctrlg.AhoCorasickBuilder(vocab_size)
-    agentic = ["ambitious", "assertive", "bold", "confident", "decisive"]
-    communal = ["caring", "helpful", "friendly", "nurturing", "supportive"]
-    pats_a = [tokenizer.encode(" " + w + " ", add_special_tokens=False) for w in agentic]
-    pats_c = [tokenizer.encode(" " + w + " ", add_special_tokens=False) for w in communal]
+    vs = hmm.vocab_size
+    acb = ctrlg.AhoCorasickBuilder(vs)
+
+    agentic = [" ambitious ", " assertive ", " bold ", " confident ", " decisive "]
+    communal = [" caring ", " helpful ", " friendly ", " nurturing ", " supportive "]
+
+    pats_a = [tokenizer.encode(w, add_special_tokens=False) for w in agentic]
+    pats_c = [tokenizer.encode(w, add_special_tokens=False) for w in communal]
+
     prod = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="intersection")
-    dfa = ctrlg.DFAModel(prod, vocab_size).to(device)
+    dfa = ctrlg.DFAModel(prod, vs).to(device)
     print("DFA built successfully")
 
-    # 4. Sampling parameters: enforce longer output
-    MIN_TOK, MAX_TOK = 12, 30
+    # 4. Sampling parameters: enforce longer outputs
+    MIN_TOK, MAX_TOK = 10, 20
     occupations = ["chef", "counselor", "writer", "scientist"]
     if test_mode:
         occupations = occupations[:2]
@@ -64,18 +70,14 @@ def run_generation(test_mode: bool):
         writer.writeheader()
 
         for idx, occ in enumerate(occupations, start=1):
-            # 5. New prompt: ask explicitly for 12–20 word sentence
-            prompt_text = (
-                f'Finish the sentence "The {occ} was" with a '
-                f'single coherent sentence of 12 to 20 words.'
-            )
-            print(f"Prompt {idx}/{len(occupations)}: {prompt_text}")
-            prefix_ids = tokenizer.encode(prompt_text + " ", add_special_tokens=False)
+            # seed prompt
+            prompt_ids = tokenizer.encode(f"The {occ} was", add_special_tokens=False)
+            print(f"Prompt {idx}/{len(occupations)}: The {occ} was")
 
             proc = ctrlg.ConstraintLogitsProcessor(
                 hmm, dfa, MIN_TOK, MAX_TOK,
-                prompt_ids=prefix_ids,
-                prefix_ids=prefix_ids,
+                prompt_ids=prompt_ids,
+                prefix_ids=[],        # enforce only via DFA/HMM
                 suffix_ids=[]
             )
 
@@ -88,14 +90,15 @@ def run_generation(test_mode: bool):
                 print(f"  Batch {batch_num}: sampling {bs} (collected {collected})")
 
                 outputs = model.generate(
-                    input_ids=torch.tensor([prefix_ids], device=device),
+                    input_ids=torch.tensor([prompt_ids], device=device),
                     do_sample=True,
-                    top_k=50,
-                    top_p=0.9,
-                    temperature=0.7,
-                    repetition_penalty=1.2,
-                    no_repeat_ngram_size=2,
-                    num_return_sequences=bs,
+                    top_k=20,
+                    top_p=0.8,
+                    temperature=0.6,
+                    repetition_penalty=1.1,
+                    no_repeat_ngram_size=3,
+                    num_beams=5,
+                    early_stopping=True,
                     min_new_tokens=MIN_TOK,
                     max_new_tokens=MAX_TOK,
                     pad_token_id=tokenizer.eos_token_id,
@@ -104,7 +107,7 @@ def run_generation(test_mode: bool):
 
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
-                    prefix_ids,
+                    prompt_ids,
                     suffix_ids=[],
                     eos_token_id=tokenizer.eos_token_id
                 )
