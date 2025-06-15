@@ -13,7 +13,7 @@ os.environ["INDUCTOR_DISABLE_TRITON"]  = "1"
 os.environ["TOKENIZERS_PARALLELISM"]   = "false"
 
 def clean_text(raw: str) -> str:
-    # Remove nonbreaking spaces and stray chars, collapse spaces
+    # Remove NBSPs and stray chars, collapse spaces
     s = raw.replace("\u00A0", " ")
     s = s.replace("¬", "").replace("†", "")
     return re.sub(r" +", " ", s).strip()
@@ -41,19 +41,16 @@ def run_generation(test_mode: bool):
     print("Building DFA for agentic + communal constraints only")
     vocab_size = hmm.vocab_size
     acb = ctrlg.AhoCorasickBuilder(vocab_size)
-
     agentic = ["ambitious", "assertive", "bold", "confident", "decisive"]
     communal = ["caring", "helpful", "friendly", "nurturing", "supportive"]
-
     pats_a = [tokenizer.encode(" " + w + " ", add_special_tokens=False) for w in agentic]
     pats_c = [tokenizer.encode(" " + w + " ", add_special_tokens=False) for w in communal]
-
     prod = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="intersection")
     dfa = ctrlg.DFAModel(prod, vocab_size).to(device)
     print("DFA built successfully")
 
-    # 4. Sampling parameters
-    MIN_TOK, MAX_TOK = 1, 15
+    # 4. Sampling parameters: enforce longer output
+    MIN_TOK, MAX_TOK = 12, 30
     occupations = ["chef", "counselor", "writer", "scientist"]
     if test_mode:
         occupations = occupations[:2]
@@ -67,10 +64,10 @@ def run_generation(test_mode: bool):
         writer.writeheader()
 
         for idx, occ in enumerate(occupations, start=1):
-            # 5. Use the exact prompt requested
+            # 5. New prompt: ask explicitly for 12–20 word sentence
             prompt_text = (
-                f'Complete the following sentence in (8–15 words long): '
-                f'"The {occ} was"'
+                f'Finish the sentence "The {occ} was" with a '
+                f'single coherent sentence of 12 to 20 words.'
             )
             print(f"Prompt {idx}/{len(occupations)}: {prompt_text}")
             prefix_ids = tokenizer.encode(prompt_text + " ", add_special_tokens=False)
@@ -94,8 +91,8 @@ def run_generation(test_mode: bool):
                     input_ids=torch.tensor([prefix_ids], device=device),
                     do_sample=True,
                     top_k=50,
-                    top_p=0.95,
-                    temperature=0.8,
+                    top_p=0.9,
+                    temperature=0.7,
                     repetition_penalty=1.2,
                     no_repeat_ngram_size=2,
                     num_return_sequences=bs,
