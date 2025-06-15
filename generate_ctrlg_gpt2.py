@@ -13,7 +13,6 @@ os.environ["INDUCTOR_DISABLE_TRITON"]  = "1"
 os.environ["TOKENIZERS_PARALLELISM"]   = "false"
 
 def clean_text(raw: str) -> str:
-    # Remove NBSPs and stray chars, collapse spaces
     s = raw.replace("\u00A0", " ")
     s = s.replace("¬", "").replace("†", "")
     return re.sub(r" +", " ", s).strip()
@@ -23,43 +22,37 @@ def run_generation(test_mode: bool):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
 
-    # 1) Load GPT-2 + tokenizer
+    # 1. Load model + tokenizer
     print("Loading GPT-2 model and tokenizer")
     model = AutoModelForCausalLM.from_pretrained("ctrlg/gpt2-large_common-gen")\
-             .to(device).eval()
+               .to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained("ctrlg/gpt2-large_common-gen")
 
-    # 2) Load HMM
+    # 2. Load HMM
     print("Loading HMM with 4096 states")
     hmm = ctrlg.HMM.from_pretrained("ctrlg/hmm_gpt2-large_common-gen_4096")\
              .to(device)
     print("HMM loaded")
 
-    # 3) Build the keyphrase DFA once
+    # 3. Build DFA for whole-word agentic + communal constraints
     print("Building DFA for agentic + communal constraints only")
     vs = hmm.vocab_size
     acb = ctrlg.AhoCorasickBuilder(vs)
-
-    agentic = [
-        " ambitious ", " assertive ", " bold ",
-        " confident ", " decisive ",
-        " independent ", " self-reliant ",
-        " competitive ", " adventurous "
-    ]
-    communal = [
-        " accommodating ", " caring ", " cooperative ",
-        " empathetic ", " friendly ",
-        " nurturing ", " supportive ",
-        " compassionate ", " helpful ", " loyal "
-    ]
+    agentic = [" ambitious ", " assertive ", " bold ",
+               " confident ", " decisive ",
+               " independent ", " self-reliant ",
+               " competitive ", " adventurous "]
+    communal = [" accommodating ", " caring ", " cooperative ",
+                " empathetic ", " friendly ",
+                " nurturing ", " supportive ",
+                " compassionate ", " helpful ", " loyal "]
     pats_a = [tokenizer.encode(w, add_special_tokens=False) for w in agentic]
     pats_c = [tokenizer.encode(w, add_special_tokens=False) for w in communal]
-    prod  = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)],
-                            mode="intersection")
-    dfa   = ctrlg.DFAModel(prod, vs).to(device)
+    prod = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="intersection")
+    dfa = ctrlg.DFAModel(prod, vs).to(device)
     print("DFA built successfully")
 
-    # 4) Setup sampling bounds & occupations
+    # 4. Sampling bounds & occupations
     MIN_TOK, MAX_TOK = 10, 20
     occupations = [
         "The architect was", "The artist was", "The barista was",
@@ -76,13 +69,9 @@ def run_generation(test_mode: bool):
     else:
         target_per_prompt, batch_size = 500, 100
 
-    # prepare the period token for suffix & eos
-    period_id = tokenizer.encode(".", add_special_tokens=False)[0]
-
     outname = "output_test.csv" if test_mode else "output.csv"
     with open(outname, "w", newline="", encoding="utf8") as fout:
-        writer = csv.DictWriter(fout,
-                                fieldnames=["occupation", "sample", "label"])
+        writer = csv.DictWriter(fout, fieldnames=["occupation","sample","label"])
         writer.writeheader()
 
         for idx, prompt in enumerate(occupations, start=1):
@@ -97,12 +86,12 @@ def run_generation(test_mode: bool):
                 batch_num += 1
                 bs = min(batch_size, target_per_prompt - collected)
 
-                # 5) Re-create the processor fresh each batch
                 proc = ctrlg.ConstraintLogitsProcessor(
-                    hmm, dfa, MIN_TOK, MAX_TOK,
+                    hmm, dfa,
+                    MIN_TOK, MAX_TOK,
                     prompt_ids=prefix_ids,
-                    prefix_ids=[],           # only DFA controls prefixes
-                    suffix_ids=[period_id]   # stop once "." appears
+                    prefix_ids=[],   # use only DFA/HMM for constraints
+                    suffix_ids=[]
                 )
                 proc.hmm_batch_size = bs
 
@@ -110,15 +99,15 @@ def run_generation(test_mode: bool):
                 outputs = model.generate(
                     input_ids=torch.tensor([prefix_ids], device=device),
                     do_sample=True,
-                    top_k=50,
-                    top_p=0.95,
-                    temperature=1.0,
-                    repetition_penalty=1.2,
-                    no_repeat_ngram_size=2,
-                    num_beams=1,
+                    top_k=50,                 # allow a wider candidate set
+                    top_p=0.7,                # narrower nucleus
+                    temperature=0.4,          # low temperature for coherence
+                    repetition_penalty=1.5,   # stronger repeat penalty
+                    no_repeat_ngram_size=3,   # block longer repeats
+                    num_return_sequences=bs,
+                    num_beams=1,              # pure sampling
                     min_new_tokens=MIN_TOK,
                     max_new_tokens=MAX_TOK,
-                    eos_token_id=period_id,        # halt on period
                     pad_token_id=tokenizer.eos_token_id,
                     logits_processor=LogitsProcessorList([proc])
                 )
@@ -126,13 +115,11 @@ def run_generation(test_mode: bool):
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
                     prefix_ids,
-                    suffix_ids=[period_id],
+                    suffix_ids=[],
                     eos_token_id=tokenizer.eos_token_id
                 )
                 for seq in gens:
-                    sample = clean_text(
-                        tokenizer.decode(seq, skip_special_tokens=True)
-                    )
+                    sample = clean_text(tokenizer.decode(seq, skip_special_tokens=True))
                     if "_" in sample or sample in seen:
                         continue
                     seen.add(sample)
@@ -142,7 +129,6 @@ def run_generation(test_mode: bool):
                         "label":      "Ctrl-G GPT-2"
                     })
                     collected += 1
-                    # only log every 100th unique sample
                     if test_mode or collected % 100 == 0:
                         print("    →", sample)
                     if collected >= target_per_prompt:
