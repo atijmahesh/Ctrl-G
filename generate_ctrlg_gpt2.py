@@ -34,6 +34,7 @@ def run_generation(test_mode: bool):
         "ctrlg/hmm_gpt2-large_common-gen_4096"
     ).to(device)
     print("HMM loaded")
+    hmm.vocab_size = tokenizer.vocab_size
 
     # Build DFA on exact subword tokens + word-count constraint
     agentic = ["ambitious", "assertive", "bold", "confident",
