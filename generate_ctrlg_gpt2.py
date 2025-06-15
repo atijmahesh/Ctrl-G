@@ -13,7 +13,6 @@ os.environ["INDUCTOR_DISABLE_TRITON"]  = "1"
 os.environ["TOKENIZERS_PARALLELISM"]   = "false"
 
 def clean_text(raw: str) -> str:
-    # Remove nonbreaking spaces and stray chars, collapse spaces
     s = raw.replace("\u00A0", " ")
     s = s.replace("¬", "").replace("†", "")
     return re.sub(r" +", " ", s).strip()
@@ -43,12 +42,16 @@ def run_generation(test_mode: bool):
     acb = ctrlg.AhoCorasickBuilder(vs)
 
     agentic = [
-        " ambitious ", " assertive ", " bold ", " confident ", " decisive ",
-        " independent ", " self-reliant ", " competitive ", " adventurous "
+        " ambitious ", " assertive ", " bold ",
+        " confident ", " decisive ",
+        " independent ", " self-reliant ",
+        " competitive ", " adventurous "
     ]
     communal = [
-        " accommodating ", " caring ", " cooperative ", " empathetic ", " friendly ",
-        " nurturing ", " supportive ", " compassionate ", " helpful ", " loyal "
+        " accommodating ", " caring ", " cooperative ",
+        " empathetic ", " friendly ",
+        " nurturing ", " supportive ",
+        " compassionate ", " helpful ", " loyal "
     ]
 
     pats_a = [tokenizer.encode(w, add_special_tokens=False) for w in agentic]
@@ -61,31 +64,18 @@ def run_generation(test_mode: bool):
     # 4. Sampling parameters: enforce longer outputs
     MIN_TOK, MAX_TOK = 10, 20
     occupations = [
-        "The architect was",
-        "The artist was",
-        "The barista was",
-        "The chef was",
-        "The counselor was",
-        "The doctor was",
-        "The electrician was",
-        "The engineer was",
-        "The journalist was",
-        "The lawyer was",
-        "The mechanic was",
-        "The nurse was",
-        "The pharmacist was",
-        "The photographer was",
-        "The pilot was",
-        "The plumber was",
-        "The scientist was",
-        "The teacher was",
-        "The salesperson was",
-        "The writer was"
+        "The architect was", "The artist was", "The barista was",
+        "The chef was",     "The counselor was", "The doctor was",
+        "The electrician was","The engineer was",  "The journalist was",
+        "The lawyer was",   "The mechanic was",  "The nurse was",
+        "The pharmacist was","The photographer was","The pilot was",
+        "The plumber was",  "The scientist was", "The teacher was",
+        "The salesperson was","The writer was"
     ]
 
     if test_mode:
         occupations = occupations[:2]
-        target_per_prompt, batch_size = 3, 3
+        target_per_prompt, batch_size = 3, 50
     else:
         target_per_prompt, batch_size = 500, 100
 
@@ -97,14 +87,14 @@ def run_generation(test_mode: bool):
         for idx, prompt in enumerate(occupations, start=1):
             print(f"Prompt {idx}/{len(occupations)}: {prompt}")
             prefix_ids = tokenizer.encode(prompt, add_special_tokens=False)
-
             proc = ctrlg.ConstraintLogitsProcessor(
                 hmm, dfa, MIN_TOK, MAX_TOK,
                 prompt_ids=prefix_ids,
-                prefix_ids=[],        # enforce only via DFA/HMM
+                prefix_ids=[],
                 suffix_ids=[]
             )
 
+            seen = set()
             collected = 0
             batch_num = 0
             while collected < target_per_prompt:
@@ -116,13 +106,13 @@ def run_generation(test_mode: bool):
                 outputs = model.generate(
                     input_ids=torch.tensor([prefix_ids], device=device),
                     do_sample=True,
-                    top_k=20,
-                    top_p=0.8,
-                    temperature=0.6,
-                    repetition_penalty=1.1,
-                    no_repeat_ngram_size=3,
-                    num_beams=5,
-                    early_stopping=True,
+                    top_k=50,
+                    top_p=0.95,
+                    temperature=1.0,
+                    repetition_penalty=1.2,
+                    no_repeat_ngram_size=2,
+                    num_return_sequences=bs,
+                    num_beams=1,
                     min_new_tokens=MIN_TOK,
                     max_new_tokens=MAX_TOK,
                     pad_token_id=tokenizer.eos_token_id,
@@ -137,15 +127,18 @@ def run_generation(test_mode: bool):
                 )
                 for seq in gens:
                     sample = clean_text(tokenizer.decode(seq, skip_special_tokens=True))
-                    if "_" in sample:
+                    if "_" in sample or sample in seen:
                         continue
+                    seen.add(sample)
                     writer.writerow({
                         "occupation": prompt,
                         "sample":     sample,
                         "label":      "Ctrl-G GPT-2"
                     })
-                    print("    →", sample)
                     collected += 1
+                    # print one example every 100 samples (or always in test mode)
+                    if test_mode or collected % 100 == 0:
+                        print("    →", sample)
                     if collected >= target_per_prompt:
                         break
 
@@ -158,7 +151,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--test",
         action="store_true",
-        help="small-scale test run (2 prompts, 3 samples each)"
+        help="small-scale test run (2 prompts, 50 samples each)"
     )
     args = parser.parse_args()
     run_generation(test_mode=args.test)
