@@ -23,46 +23,53 @@ def run_generation(test_mode: bool):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
 
-    print("Loading GPT2 model and tokenizer")
+    # 1. Load model + tokenizer
+    print("Loading GPT-2 model and tokenizer")
     model = AutoModelForCausalLM.from_pretrained(
         "ctrlg/gpt2-large_common-gen"
     ).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained("ctrlg/gpt2-large_common-gen")
 
+    # 2. Clear cache
+    torch.cuda.empty_cache()
+
+    # 3. Load HMM
     print("Loading HMM with 4096 states")
     hmm = ctrlg.HMM.from_pretrained(
         "ctrlg/hmm_gpt2-large_common-gen_4096"
     ).to(device)
     print("HMM loaded")
 
-    # Build DFA on exact subword tokens only (no word-count automaton)
-    agentic = ["ambitious", "assertive", "bold", "confident",
-               "decisive", "independent", "self", "reliant",
-               "competitive", "adventurous"]
-    communal = ["accommodating", "caring", "cooperative",
-                "empathetic", "friendly", "nurturing",
-                "supportive", "compassionate",
-                "helpful", "loyal"]
+    # 4. Build DFA using past style (agentic + communal + word-count)
+    print("Building DFA with agentic, communal, and word-count constraints")
+    vocab_size   = hmm.vocab_size
+    eos_token_id = hmm.eos_token_id
 
-    print("Building DFA for agentic + communal constraints only")
-    vocab_size = hmm.vocab_size             # use HMM’s own vocab_size
     acb = ctrlg.AhoCorasickBuilder(vocab_size)
+    wcb = ctrlg.WordCountBuilder(tokenizer, vocab_size)
 
-    pats_a = [tokenizer.encode(w, add_special_tokens=False) for w in agentic]
-    pats_c = [tokenizer.encode(w, add_special_tokens=False) for w in communal]
+    agentic = [" ambitious", " assertive", " bold", " confident", " decisive"]
+    communal = [" unselfish", " accommodating", " caring",
+                " cooperative", " empathetic", " friendly"]
 
-    # intersect only the two keyphrase DFAs
-    prod = ctrlg.DFA_prod(
-        [acb.build(pats_a), acb.build(pats_c)],
-        mode="intersection"
-    )
-    dfa = ctrlg.DFAModel(prod, vocab_size).to(device)
-    print("DFA built successfully")
+    dfa_graphs = []
+    for kp in (agentic, communal):
+        pats = [tokenizer.encode(x, add_special_tokens=False) for x in kp]
+        dfa_graphs.append(acb.build(pats))
 
-    # encourage a clean sentence ending
-    period_id = tokenizer.encode(".", add_special_tokens=False)
+    # exactly 8-15 words generated
+    dfa_graphs.append(wcb.build(8, 15))
 
-    MIN_TOK, MAX_TOK = 1, 25
+    prod = ctrlg.DFA_prod(dfa_graphs, mode="intersection")
+    dfa  = ctrlg.DFAModel(prod, vocab_size).to(device)
+    print("DFA built")
+
+    # 5. Prepare suffix to stop on period + end-of-text
+    suffix = ".<|endoftext|>"
+    suffix_ids = tokenizer.encode(suffix, add_special_tokens=False)
+
+    # 6. Generation bounds
+    MIN_TOK, MAX_TOK = 5, 32
     occupations = [
         "The chef was",
         "The counselor was",
@@ -71,11 +78,9 @@ def run_generation(test_mode: bool):
     ]
     if test_mode:
         occupations = occupations[:2]
-        target_per_prompt = 3
-        batch_size = 3
+        target_per_prompt, batch_size = 3, 3
     else:
-        target_per_prompt = 500
-        batch_size = 100
+        target_per_prompt, batch_size = 500, 100
 
     outname = "output_test.csv" if test_mode else "output.csv"
     with open(outname, "w", newline="", encoding="utf8") as fout:
@@ -85,11 +90,12 @@ def run_generation(test_mode: bool):
         for idx, prompt in enumerate(occupations, start=1):
             print(f"Prompt {idx}/{len(occupations)}: {prompt}")
             prefix_ids = tokenizer.encode(prompt + " ", add_special_tokens=False)
+
             proc = ctrlg.ConstraintLogitsProcessor(
                 hmm, dfa, MIN_TOK, MAX_TOK,
                 prompt_ids=prefix_ids,
                 prefix_ids=prefix_ids,
-                suffix_ids=[period_id]
+                suffix_ids=suffix_ids
             )
 
             collected = 0
@@ -104,13 +110,11 @@ def run_generation(test_mode: bool):
                     input_ids=torch.tensor([prefix_ids], device=device),
                     do_sample=True,
                     top_k=50,
-                    top_p=0.9,
-                    temperature=0.7,
+                    top_p=0.95,
+                    temperature=0.8,
                     repetition_penalty=1.2,
                     no_repeat_ngram_size=2,
                     num_return_sequences=bs,
-                    num_beams=3,
-                    early_stopping=True,
                     min_new_tokens=MIN_TOK,
                     max_new_tokens=MAX_TOK,
                     pad_token_id=tokenizer.eos_token_id,
@@ -120,15 +124,10 @@ def run_generation(test_mode: bool):
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
                     prefix_ids,
-                    suffix_ids=[period_id],
+                    suffix_ids=suffix_ids,
                     eos_token_id=tokenizer.eos_token_id
                 )
-                ranked = ctrlg.rank_generated_ids(
-                    gens, outputs, prefix_ids,
-                    eos_token_id=tokenizer.eos_token_id
-                )[:bs]
-
-                for seq in ranked:
+                for seq in gens:
                     sample = clean_text(tokenizer.decode(seq, skip_special_tokens=True))
                     if "_" in sample:
                         continue
