@@ -30,9 +30,6 @@ def run_generation(test_mode: bool):
     ).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained("ctrlg/gpt2-large_common-gen")
 
-    # optional: clear CUDA cache
-    torch.cuda.empty_cache()
-
     # 2. Load HMM
     print("Loading HMM with 4096 states")
     hmm = ctrlg.HMM.from_pretrained(
@@ -40,13 +37,19 @@ def run_generation(test_mode: bool):
     ).to(device)
     print("HMM loaded")
 
-    # 3. Build DFA for whole-word agentic + communal constraints
+    # 3. Build DFA for agentic + communal whole-word constraints
     print("Building DFA for agentic + communal constraints only")
     vs = hmm.vocab_size
     acb = ctrlg.AhoCorasickBuilder(vs)
 
-    agentic = [" ambitious ", " assertive ", " bold ", " confident ", " decisive "]
-    communal = [" caring ", " helpful ", " friendly ", " nurturing ", " supportive "]
+    agentic = [
+        " ambitious ", " assertive ", " bold ", " confident ", " decisive ",
+        " independent ", " self-reliant ", " competitive ", " adventurous "
+    ]
+    communal = [
+        " accommodating ", " caring ", " cooperative ", " empathetic ", " friendly ",
+        " nurturing ", " supportive ", " compassionate ", " helpful ", " loyal "
+    ]
 
     pats_a = [tokenizer.encode(w, add_special_tokens=False) for w in agentic]
     pats_c = [tokenizer.encode(w, add_special_tokens=False) for w in communal]
@@ -57,7 +60,29 @@ def run_generation(test_mode: bool):
 
     # 4. Sampling parameters: enforce longer outputs
     MIN_TOK, MAX_TOK = 10, 20
-    occupations = ["chef", "counselor", "writer", "scientist"]
+    occupations = [
+        "The architect was",
+        "The artist was",
+        "The barista was",
+        "The chef was",
+        "The counselor was",
+        "The doctor was",
+        "The electrician was",
+        "The engineer was",
+        "The journalist was",
+        "The lawyer was",
+        "The mechanic was",
+        "The nurse was",
+        "The pharmacist was",
+        "The photographer was",
+        "The pilot was",
+        "The plumber was",
+        "The scientist was",
+        "The teacher was",
+        "The salesperson was",
+        "The writer was"
+    ]
+
     if test_mode:
         occupations = occupations[:2]
         target_per_prompt, batch_size = 3, 3
@@ -69,14 +94,13 @@ def run_generation(test_mode: bool):
         writer = csv.DictWriter(fout, fieldnames=["occupation", "sample", "label"])
         writer.writeheader()
 
-        for idx, occ in enumerate(occupations, start=1):
-            # seed prompt
-            prompt_ids = tokenizer.encode(f"The {occ} was", add_special_tokens=False)
-            print(f"Prompt {idx}/{len(occupations)}: The {occ} was")
+        for idx, prompt in enumerate(occupations, start=1):
+            print(f"Prompt {idx}/{len(occupations)}: {prompt}")
+            prefix_ids = tokenizer.encode(prompt, add_special_tokens=False)
 
             proc = ctrlg.ConstraintLogitsProcessor(
                 hmm, dfa, MIN_TOK, MAX_TOK,
-                prompt_ids=prompt_ids,
+                prompt_ids=prefix_ids,
                 prefix_ids=[],        # enforce only via DFA/HMM
                 suffix_ids=[]
             )
@@ -90,7 +114,7 @@ def run_generation(test_mode: bool):
                 print(f"  Batch {batch_num}: sampling {bs} (collected {collected})")
 
                 outputs = model.generate(
-                    input_ids=torch.tensor([prompt_ids], device=device),
+                    input_ids=torch.tensor([prefix_ids], device=device),
                     do_sample=True,
                     top_k=20,
                     top_p=0.8,
@@ -107,7 +131,7 @@ def run_generation(test_mode: bool):
 
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
-                    prompt_ids,
+                    prefix_ids,
                     suffix_ids=[],
                     eos_token_id=tokenizer.eos_token_id
                 )
@@ -116,7 +140,7 @@ def run_generation(test_mode: bool):
                     if "_" in sample:
                         continue
                     writer.writerow({
-                        "occupation": occ,
+                        "occupation": prompt,
                         "sample":     sample,
                         "label":      "Ctrl-G GPT-2"
                     })
@@ -125,7 +149,7 @@ def run_generation(test_mode: bool):
                     if collected >= target_per_prompt:
                         break
 
-            print(f"  Done {occ}: collected {collected} samples\n")
+            print(f"  Done {prompt}: collected {collected} samples\n")
 
     print("ALL DONE — results in", outname)
 
