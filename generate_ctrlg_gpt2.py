@@ -2,159 +2,136 @@
 import os
 import re
 import csv
-import argparse
 import torch
 import ctrlg
 from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessorList
-
-# Turn off advanced optimizations
 os.environ["TORCHINDUCTOR_DISABLE"]   = "1"
 os.environ["INDUCTOR_DISABLE_TRITON"]  = "1"
 os.environ["TOKENIZERS_PARALLELISM"]   = "false"
 
-def clean_text(raw: str) -> str:
-    # Remove nonbreaking spaces and stray chars, collapse spaces
-    s = raw.replace("\u00A0", " ")
-    s = s.replace("¬", "").replace("†", "")
-    return re.sub(r" +", " ", s).strip()
+# ─── Config ────────────────────────────────────────────────────────────
+OUTPUT_CSV   = "ctrlg_gpt2_outputs.csv"
+NUM_SAMPLES  = 500
+TEMP, TOP_P  = 1.0, 0.95
+MIN_TOK, MAX_TOK = 8, 15
 
-def run_generation(test_mode: bool):
-    print("STARTING SCRIPT" + (" (TEST MODE)" if test_mode else ""))
+OCCUPATIONS = [
+    "The architect was", "The artist was", "The barista was", "The chef was",
+    "The counselor was", "The doctor was", "The electrician was",
+    "The engineer was", "The journalist was", "The lawyer was",
+    "The mechanic was", "The nurse was", "The pharmacist was",
+    "The photographer was", "The pilot was", "The plumber was",
+    "The scientist was", "The teacher was", "The salesperson was",
+    "The writer was"
+]
+
+# Pad each synonym with spaces for whole-word matching
+AGENTIC = [
+    " ambitious ", " assertive ", " bold ", " confident ", " decisive ",
+    " independent ", " self-reliant ", " competitive ", " adventurous ",
+    " dominant "
+]
+COMMUNAL = [
+    " accommodating ", " caring ", " cooperative ", " empathetic ", " friendly ",
+    " nurturing ", " supportive ", " compassionate ", " helpful ", " loyal "
+]
+
+# ─── Helpers ────────────────────────────────────────────────────────────
+def clean_text(text):
+    t = text.replace("\u00A0", " ").replace("¬", "").replace("†", "")
+    return re.sub(r" +", " ", t).strip()
+
+# ─── Ctrl-G GPT-2 Generation ─────────────────────────────────────────────
+def run_ctrlg_gpt2():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Device:", device)
 
-    # 1. Load model + tokenizer
-    print("Loading GPT-2 model and tokenizer")
+    # 1) Load GPT-2 + tokenizer
     model = AutoModelForCausalLM.from_pretrained(
         "ctrlg/gpt2-large_common-gen"
     ).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained("ctrlg/gpt2-large_common-gen")
 
-    # 2. Load HMM
-    print("Loading HMM with 4096 states")
+    # 2) Load HMM
     hmm = ctrlg.HMM.from_pretrained(
         "ctrlg/hmm_gpt2-large_common-gen_4096"
     ).to(device)
-    print("HMM loaded")
 
-    # 3. Build DFA for agentic + communal whole-word constraints
-    print("Building DFA for agentic + communal constraints only")
-    vs = hmm.vocab_size
+    # 3) Build DFA requiring ≥1 agentic & ≥1 communal
+    vs  = hmm.vocab_size
     acb = ctrlg.AhoCorasickBuilder(vs)
+    pats_a = [tokenizer.encode(w, add_special_tokens=False) for w in AGENTIC]
+    pats_c = [tokenizer.encode(w, add_special_tokens=False) for w in COMMUNAL]
+    prod   = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="intersection")
+    dfa    = ctrlg.DFAModel(prod, vs).to(device)
 
-    agentic = [
-        " ambitious ", " assertive ", " bold ",
-        " confident ", " decisive ",
-        " independent ", " self-reliant ",
-        " competitive ", " adventurous ", " dominant "
-    ]
-    communal = [
-        " accommodating ", " caring ", " cooperative ",
-        " empathetic ", " friendly ",
-        " nurturing ", " supportive ",
-        " compassionate ", " helpful ", " loyal "
-    ]
+    # 4) Period token to stop at first “.”
+    period_id = tokenizer.encode(".", add_special_tokens=False)[0]
 
-    pats_a = [tokenizer.encode(w, add_special_tokens=False) for w in agentic]
-    pats_c = [tokenizer.encode(w, add_special_tokens=False) for w in communal]
-
-    prod = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="intersection")
-    dfa  = ctrlg.DFAModel(prod, vs).to(device)
-    print("DFA built successfully")
-
-    # 4. Sampling parameters: enforce longer outputs
-    MIN_TOK, MAX_TOK = 10, 20
-    occupations = [
-        "The architect was", "The artist was", "The barista was",
-        "The chef was",     "The counselor was", "The doctor was",
-        "The electrician was","The engineer was",  "The journalist was",
-        "The lawyer was",   "The mechanic was",  "The nurse was",
-        "The pharmacist was","The photographer was","The pilot was",
-        "The plumber was",  "The scientist was", "The teacher was",
-        "The salesperson was","The writer was"
-    ]
-
-    if test_mode:
-        occupations = occupations[:2]
-        target_per_prompt, batch_size = 3, 50
-    else:
-        target_per_prompt, batch_size = 50, 100  # lowered to 50 unique samples
-
-    outname = "output_test.csv" if test_mode else "output.csv"
-    with open(outname, "w", newline="", encoding="utf8", buffering=1) as fout:
+    # 5) Open CSV for writing
+    with open(OUTPUT_CSV, "w", newline="", encoding="utf8", buffering=1) as fout:
         writer = csv.DictWriter(fout, fieldnames=["occupation","sample","label"])
         writer.writeheader()
 
-        for idx, prompt in enumerate(occupations, start=1):
-            print(f"Prompt {idx}/{len(occupations)}: {prompt}")
-            prefix_ids = tokenizer.encode(prompt, add_special_tokens=False)
+        # 6) Loop through occupations
+        for occ in OCCUPATIONS:
+            print(f"> Generating for: {occ}")
+            prefix_ids = tokenizer.encode(occ, add_special_tokens=False)
 
-            seen = set()
             collected = 0
-            batch_num = 0
+            seen = set()
+            batch_size = 100
 
-            while collected < target_per_prompt:
-                batch_num += 1
-                bs = min(batch_size, target_per_prompt - collected)
+            # 7) Sample until we have NUM_SAMPLES uniques
+            while collected < NUM_SAMPLES:
+                bs = min(batch_size, NUM_SAMPLES - collected)
 
                 proc = ctrlg.ConstraintLogitsProcessor(
                     hmm, dfa, MIN_TOK, MAX_TOK,
                     prompt_ids=prefix_ids,
-                    prefix_ids=[],  # enforce only via DFA
-                    suffix_ids=[]
+                    prefix_ids=[],            # only DFA enforces constraints
+                    suffix_ids=[period_id]    # stop at period
                 )
                 proc.hmm_batch_size = bs
 
-                print(f"  Batch {batch_num}: sampling {bs} (collected {collected})")
                 outputs = model.generate(
                     input_ids=torch.tensor([prefix_ids], device=device),
                     do_sample=True,
-                    top_k=50,
-                    top_p=0.95,
-                    temperature=1.0,
+                    top_p=TOP_P,
+                    temperature=TEMP,
                     repetition_penalty=1.2,
                     no_repeat_ngram_size=2,
-                    num_return_sequences=bs,
-                    num_beams=1,
                     min_new_tokens=MIN_TOK,
                     max_new_tokens=MAX_TOK,
                     pad_token_id=tokenizer.eos_token_id,
+                    eos_token_id=period_id,
+                    num_return_sequences=bs,
+                    num_beams=1,
                     logits_processor=LogitsProcessorList([proc])
                 )
 
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
                     prefix_ids,
-                    suffix_ids=[],
+                    suffix_ids=[period_id],
                     eos_token_id=tokenizer.eos_token_id
                 )
                 for seq in gens:
                     sample = clean_text(tokenizer.decode(seq, skip_special_tokens=True))
-                    if "_" in sample or sample in seen:
+                    if sample in seen:
                         continue
                     seen.add(sample)
                     writer.writerow({
-                        "occupation": prompt,
+                        "occupation": occ,
                         "sample":     sample,
                         "label":      "Ctrl-G GPT-2"
                     })
                     collected += 1
-                    # print every 10 unique samples (or always in test mode)
-                    if test_mode or collected % 10 == 0:
-                        print("    →", sample)
-                    if collected >= target_per_prompt:
+                    if collected % 100 == 0:
+                        print(f"  → Collected {collected}/{NUM_SAMPLES}")
+                    if collected >= NUM_SAMPLES:
                         break
 
-            print(f"  Done {prompt}: collected {collected} samples\n")
-
-    print("ALL DONE — results in", outname)
+    print("Done! Results in", OUTPUT_CSV)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--test",
-        action="store_true",
-        help="small-scale test run (2 prompts, 50 samples each)"
-    )
-    args = parser.parse_args()
-    run_generation(test_mode=args.test)
+    run_ctrlg_gpt2()
