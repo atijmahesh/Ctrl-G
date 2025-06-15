@@ -8,12 +8,12 @@ import ctrlg
 from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessorList
 
 # Turn off advanced optimizations
-os.environ["TORCHINDUCTOR_DISABLE"] = "1"
-os.environ["INDUCTOR_DISABLE_TRITON"] = "1"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TORCHINDUCTOR_DISABLE"]   = "1"
+os.environ["INDUCTOR_DISABLE_TRITON"]  = "1"
+os.environ["TOKENIZERS_PARALLELISM"]   = "false"
 
 def clean_text(raw: str) -> str:
-    # Remove NBSPs and stray chars, collapse spaces
+    # Remove nonbreaking spaces and stray chars, collapse spaces
     s = raw.replace("\u00A0", " ")
     s = s.replace("¬", "").replace("†", "")
     return re.sub(r" +", " ", s).strip()
@@ -35,7 +35,7 @@ def run_generation(test_mode: bool):
     ).to(device)
     print("HMM loaded")
 
-    # Build DFA on exact subword tokens (no leading/trailing spaces)
+    # Build DFA on exact subword tokens + word-count constraint
     agentic = ["ambitious", "assertive", "bold", "confident",
                "decisive", "independent", "self", "reliant",
                "competitive", "adventurous"]
@@ -44,15 +44,26 @@ def run_generation(test_mode: bool):
                 "supportive", "compassionate",
                 "helpful", "loyal"]
 
-    print("Tokenizing patterns for DFA")
-    acb = ctrlg.AhoCorasickBuilder(hmm.vocab_size)
+    print("Building DFA for agentic + communal + word-count constraints")
+    vocab_size = tokenizer.vocab_size
+    acb = ctrlg.AhoCorasickBuilder(vocab_size)
+    wcb = ctrlg.WordCountBuilder(tokenizer, vocab_size)
+
     pats_a = [tokenizer.encode(w, add_special_tokens=False) for w in agentic]
     pats_c = [tokenizer.encode(w, add_special_tokens=False) for w in communal]
-    prod = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="intersection")
-    dfa = ctrlg.DFAModel(prod, hmm.vocab_size).to(device)
-    print("DFA built")
 
-    # prepare suffix token to encourage clean ending
+    dfa_graphs = [
+        acb.build(pats_a),
+        acb.build(pats_c),
+        # enforce between 1 and 25 words in the generated segment
+        wcb.build(1, 25)
+    ]
+
+    prod = ctrlg.DFA_prod(dfa_graphs, mode="intersection")
+    dfa  = ctrlg.DFAModel(prod, vocab_size).to(device)
+    print("DFA built successfully")
+
+    # encourage a clean sentence ending
     period_id = tokenizer.encode(".", add_special_tokens=False)
 
     MIN_TOK, MAX_TOK = 1, 25
@@ -62,7 +73,6 @@ def run_generation(test_mode: bool):
         "The writer was",
         "The scientist was"
     ]
-    # In test mode, only first 2 prompts, 3 samples each
     if test_mode:
         occupations = occupations[:2]
         target_per_prompt = 3
@@ -111,7 +121,6 @@ def run_generation(test_mode: bool):
                     logits_processor=LogitsProcessorList([proc])
                 )
 
-                # extract and rank by model score
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
                     prefix_ids,
@@ -119,7 +128,8 @@ def run_generation(test_mode: bool):
                     eos_token_id=tokenizer.eos_token_id
                 )
                 ranked = ctrlg.rank_generated_ids(
-                    gens, outputs, prefix_ids, eos_token_id=tokenizer.eos_token_id
+                    gens, outputs, prefix_ids,
+                    eos_token_id=tokenizer.eos_token_id
                 )[:bs]
 
                 for seq in ranked:
@@ -136,7 +146,7 @@ def run_generation(test_mode: bool):
                     if collected >= target_per_prompt:
                         break
 
-            print(f"  Done {prompt}: {collected} samples\n")
+            print(f"  Done {prompt}: collected {collected} samples\n")
 
     print("ALL DONE — results in", outname)
 
