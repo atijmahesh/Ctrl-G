@@ -44,23 +44,19 @@ def run_generation(test_mode: bool):
                 "supportive", "compassionate",
                 "helpful", "loyal"]
 
-    print("Building DFA for agentic + communal + word-count constraints")
+    print("Building DFA for agentic + communal constraints only")
     vocab_size = tokenizer.vocab_size
     acb = ctrlg.AhoCorasickBuilder(vocab_size)
-    wcb = ctrlg.WordCountBuilder(tokenizer, vocab_size)
 
     pats_a = [tokenizer.encode(w, add_special_tokens=False) for w in agentic]
     pats_c = [tokenizer.encode(w, add_special_tokens=False) for w in communal]
 
-    dfa_graphs = [
-        acb.build(pats_a),
-        acb.build(pats_c),
-        # enforce between 1 and 25 words in the generated segment
-        wcb.build(1, 25)
-    ]
-
-    prod = ctrlg.DFA_prod(dfa_graphs, mode="intersection")
-    dfa  = ctrlg.DFAModel(prod, vocab_size).to(device)
+    # intersect only the two keyphrase DFAs
+    prod = ctrlg.DFA_prod(
+        [acb.build(pats_a), acb.build(pats_c)],
+        mode="intersection"
+    )
+    dfa = ctrlg.DFAModel(prod, vocab_size).to(device)
     print("DFA built successfully")
 
     # encourage a clean sentence ending
