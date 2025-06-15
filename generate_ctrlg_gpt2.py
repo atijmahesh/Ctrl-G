@@ -40,42 +40,30 @@ def run_generation(test_mode: bool):
     ).to(device)
     print("HMM loaded")
 
-    # 4. Build DFA using past style (agentic + communal + word-count)
-    print("Building DFA with agentic, communal, and word-count constraints")
-    vocab_size   = hmm.vocab_size
-    eos_token_id = hmm.eos_token_id
-
+    # 4. Build DFA for agentic + communal whole-word constraints
+    print("Building DFA for agentic + communal constraints only")
+    vocab_size = hmm.vocab_size
     acb = ctrlg.AhoCorasickBuilder(vocab_size)
-    wcb = ctrlg.WordCountBuilder(tokenizer, vocab_size)
 
-    agentic = [" ambitious", " assertive", " bold", " confident", " decisive"]
-    communal = [" unselfish", " accommodating", " caring",
-                " cooperative", " empathetic", " friendly"]
+    agentic = [" ambitious ", " assertive ", " bold ", " confident ", " decisive "]
+    communal = [" accommodating ", " caring ", " cooperative ",
+                " empathetic ", " friendly ", " nurturing ",
+                " supportive ", " compassionate ",
+                " helpful ", " loyal "]
 
-    dfa_graphs = []
-    for kp in (agentic, communal):
-        pats = [tokenizer.encode(x, add_special_tokens=False) for x in kp]
-        dfa_graphs.append(acb.build(pats))
+    pats_a = [tokenizer.encode(w, add_special_tokens=False) for w in agentic]
+    pats_c = [tokenizer.encode(w, add_special_tokens=False) for w in communal]
 
-    # exactly 8-15 words generated
-    dfa_graphs.append(wcb.build(8, 15))
+    prod = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="intersection")
+    dfa = ctrlg.DFAModel(prod, vocab_size).to(device)
+    print("DFA built successfully")
 
-    prod = ctrlg.DFA_prod(dfa_graphs, mode="intersection")
-    dfa  = ctrlg.DFAModel(prod, vocab_size).to(device)
-    print("DFA built")
+    # 5. Prepare suffix to stop on a period
+    period_id = tokenizer.encode(".", add_special_tokens=False)
 
-    # 5. Prepare suffix to stop on period + end-of-text
-    suffix = ".<|endoftext|>"
-    suffix_ids = tokenizer.encode(suffix, add_special_tokens=False)
-
-    # 6. Generation bounds
-    MIN_TOK, MAX_TOK = 5, 32
-    occupations = [
-        "The chef was",
-        "The counselor was",
-        "The writer was",
-        "The scientist was"
-    ]
+    # 6. Sampling parameters
+    MIN_TOK, MAX_TOK = 1, 25   # actual word count is enforced by prompt
+    occupations = ["chef", "counselor", "writer", "scientist"]
     if test_mode:
         occupations = occupations[:2]
         target_per_prompt, batch_size = 3, 3
@@ -87,15 +75,17 @@ def run_generation(test_mode: bool):
         writer = csv.DictWriter(fout, fieldnames=["occupation", "sample", "label"])
         writer.writeheader()
 
-        for idx, prompt in enumerate(occupations, start=1):
-            print(f"Prompt {idx}/{len(occupations)}: {prompt}")
-            prefix_ids = tokenizer.encode(prompt + " ", add_special_tokens=False)
+        for idx, occ in enumerate(occupations, start=1):
+            # Form the exact prompt as requested
+            template = f'Complete the following sentence in (8–15 words long): "The {occ} was"'
+            print(f"Prompt {idx}/{len(occupations)}: {template}")
+            prefix_ids = tokenizer.encode(template, add_special_tokens=False)
 
             proc = ctrlg.ConstraintLogitsProcessor(
                 hmm, dfa, MIN_TOK, MAX_TOK,
                 prompt_ids=prefix_ids,
-                prefix_ids=prefix_ids,
-                suffix_ids=suffix_ids
+                prefix_ids=[],            # only constraints via DFA
+                suffix_ids=[period_id]
             )
 
             collected = 0
@@ -110,11 +100,13 @@ def run_generation(test_mode: bool):
                     input_ids=torch.tensor([prefix_ids], device=device),
                     do_sample=True,
                     top_k=50,
-                    top_p=0.95,
-                    temperature=0.8,
+                    top_p=0.9,
+                    temperature=0.7,
                     repetition_penalty=1.2,
                     no_repeat_ngram_size=2,
                     num_return_sequences=bs,
+                    num_beams=3,
+                    early_stopping=True,
                     min_new_tokens=MIN_TOK,
                     max_new_tokens=MAX_TOK,
                     pad_token_id=tokenizer.eos_token_id,
@@ -124,15 +116,20 @@ def run_generation(test_mode: bool):
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
                     prefix_ids,
-                    suffix_ids=suffix_ids,
+                    suffix_ids=[period_id],
                     eos_token_id=tokenizer.eos_token_id
                 )
-                for seq in gens:
+                ranked = ctrlg.rank_generated_ids(
+                    gens, outputs, prefix_ids,
+                    eos_token_id=tokenizer.eos_token_id
+                )[:bs]
+
+                for seq in ranked:
                     sample = clean_text(tokenizer.decode(seq, skip_special_tokens=True))
                     if "_" in sample:
                         continue
                     writer.writerow({
-                        "occupation": prompt,
+                        "occupation": occ,
                         "sample":     sample,
                         "label":      "Ctrl-G GPT-2"
                     })
@@ -141,7 +138,7 @@ def run_generation(test_mode: bool):
                     if collected >= target_per_prompt:
                         break
 
-            print(f"  Done {prompt}: collected {collected} samples\n")
+            print(f"  Done {occ}: collected {collected} samples\n")
 
     print("ALL DONE — results in", outname)
 
