@@ -40,29 +40,26 @@ def run_generation(test_mode: bool):
     ).to(device)
     print("HMM loaded")
 
-    # 4. Build DFA for agentic + communal whole-word constraints
+    # 4. Build DFA as before (agentic + communal)
     print("Building DFA for agentic + communal constraints only")
     vocab_size = hmm.vocab_size
     acb = ctrlg.AhoCorasickBuilder(vocab_size)
 
-    agentic = [" ambitious ", " assertive ", " bold ", " confident ", " decisive "]
-    communal = [" accommodating ", " caring ", " cooperative ",
-                " empathetic ", " friendly ", " nurturing ",
-                " supportive ", " compassionate ",
-                " helpful ", " loyal "]
+    agentic = ["ambitious", "assertive", "bold", "confident", "decisive"]
+    communal = ["caring", "helpful", "friendly", "nurturing", "supportive"]
 
-    pats_a = [tokenizer.encode(w, add_special_tokens=False) for w in agentic]
-    pats_c = [tokenizer.encode(w, add_special_tokens=False) for w in communal]
+    pats_a = [tokenizer.encode(" " + w + " ", add_special_tokens=False) for w in agentic]
+    pats_c = [tokenizer.encode(" " + w + " ", add_special_tokens=False) for w in communal]
 
-    prod = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="intersection")
+    prod = ctrlg.DFA_prod(
+        [acb.build(pats_a), acb.build(pats_c)],
+        mode="intersection"
+    )
     dfa = ctrlg.DFAModel(prod, vocab_size).to(device)
     print("DFA built successfully")
 
-    # 5. Prepare suffix to stop on a period
-    period_id = tokenizer.encode(".", add_special_tokens=False)
-
-    # 6. Sampling parameters
-    MIN_TOK, MAX_TOK = 1, 25   # actual word count is enforced by prompt
+    # 5. Generation bounds
+    MIN_TOK, MAX_TOK = 1, 15
     occupations = ["chef", "counselor", "writer", "scientist"]
     if test_mode:
         occupations = occupations[:2]
@@ -76,16 +73,18 @@ def run_generation(test_mode: bool):
         writer.writeheader()
 
         for idx, occ in enumerate(occupations, start=1):
-            # Form the exact prompt as requested
-            template = f'Complete the following sentence in (8–15 words long): "The {occ} was"'
-            print(f"Prompt {idx}/{len(occupations)}: {template}")
-            prefix_ids = tokenizer.encode(template, add_special_tokens=False)
+            # embed the stop-period instruction into the prompt
+            prompt = f'Complete the following sentence in (8–15 words long): "The {occ} was."'
+            print(f"Prompt {idx}/{len(occupations)}: {prompt}")
+            prefix_ids = tokenizer.encode(prompt, add_special_tokens=False)
 
+            # **Reverted** to the original working parameters:
             proc = ctrlg.ConstraintLogitsProcessor(
-                hmm, dfa, MIN_TOK, MAX_TOK,
+                hmm, dfa,
+                MIN_TOK, MAX_TOK,
                 prompt_ids=prefix_ids,
-                prefix_ids=[],            # only constraints via DFA
-                suffix_ids=[period_id]
+                prefix_ids=prefix_ids,   # <— use full prefix
+                suffix_ids=[]            # <— no suffix automaton
             )
 
             collected = 0
@@ -100,13 +99,11 @@ def run_generation(test_mode: bool):
                     input_ids=torch.tensor([prefix_ids], device=device),
                     do_sample=True,
                     top_k=50,
-                    top_p=0.9,
-                    temperature=0.7,
+                    top_p=0.95,
+                    temperature=0.8,
                     repetition_penalty=1.2,
                     no_repeat_ngram_size=2,
                     num_return_sequences=bs,
-                    num_beams=3,
-                    early_stopping=True,
                     min_new_tokens=MIN_TOK,
                     max_new_tokens=MAX_TOK,
                     pad_token_id=tokenizer.eos_token_id,
@@ -116,15 +113,10 @@ def run_generation(test_mode: bool):
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
                     prefix_ids,
-                    suffix_ids=[period_id],
+                    suffix_ids=[],
                     eos_token_id=tokenizer.eos_token_id
                 )
-                ranked = ctrlg.rank_generated_ids(
-                    gens, outputs, prefix_ids,
-                    eos_token_id=tokenizer.eos_token_id
-                )[:bs]
-
-                for seq in ranked:
+                for seq in gens:
                     sample = clean_text(tokenizer.decode(seq, skip_special_tokens=True))
                     if "_" in sample:
                         continue
