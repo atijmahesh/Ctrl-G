@@ -30,17 +30,14 @@ def run_generation(test_mode: bool):
     ).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained("ctrlg/gpt2-large_common-gen")
 
-    # 2. Clear cache
-    torch.cuda.empty_cache()
-
-    # 3. Load HMM
+    # 2. Load HMM
     print("Loading HMM with 4096 states")
     hmm = ctrlg.HMM.from_pretrained(
         "ctrlg/hmm_gpt2-large_common-gen_4096"
     ).to(device)
     print("HMM loaded")
 
-    # 4. Build DFA as before (agentic + communal)
+    # 3. Build DFA for agentic + communal whole-word constraints
     print("Building DFA for agentic + communal constraints only")
     vocab_size = hmm.vocab_size
     acb = ctrlg.AhoCorasickBuilder(vocab_size)
@@ -51,14 +48,11 @@ def run_generation(test_mode: bool):
     pats_a = [tokenizer.encode(" " + w + " ", add_special_tokens=False) for w in agentic]
     pats_c = [tokenizer.encode(" " + w + " ", add_special_tokens=False) for w in communal]
 
-    prod = ctrlg.DFA_prod(
-        [acb.build(pats_a), acb.build(pats_c)],
-        mode="intersection"
-    )
+    prod = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="intersection")
     dfa = ctrlg.DFAModel(prod, vocab_size).to(device)
     print("DFA built successfully")
 
-    # 5. Generation bounds
+    # 4. Sampling parameters
     MIN_TOK, MAX_TOK = 1, 15
     occupations = ["chef", "counselor", "writer", "scientist"]
     if test_mode:
@@ -73,18 +67,19 @@ def run_generation(test_mode: bool):
         writer.writeheader()
 
         for idx, occ in enumerate(occupations, start=1):
-            # embed the stop-period instruction into the prompt
-            prompt = f'Complete the following sentence in (8–15 words long): "The {occ} was."'
-            print(f"Prompt {idx}/{len(occupations)}: {prompt}")
-            prefix_ids = tokenizer.encode(prompt, add_special_tokens=False)
+            # 5. Use the exact prompt requested
+            prompt_text = (
+                f'Complete the following sentence in (8–15 words long): '
+                f'"The {occ} was"'
+            )
+            print(f"Prompt {idx}/{len(occupations)}: {prompt_text}")
+            prefix_ids = tokenizer.encode(prompt_text + " ", add_special_tokens=False)
 
-            # **Reverted** to the original working parameters:
             proc = ctrlg.ConstraintLogitsProcessor(
-                hmm, dfa,
-                MIN_TOK, MAX_TOK,
+                hmm, dfa, MIN_TOK, MAX_TOK,
                 prompt_ids=prefix_ids,
-                prefix_ids=prefix_ids,   # <— use full prefix
-                suffix_ids=[]            # <— no suffix automaton
+                prefix_ids=prefix_ids,
+                suffix_ids=[]
             )
 
             collected = 0
@@ -134,10 +129,12 @@ def run_generation(test_mode: bool):
 
     print("ALL DONE — results in", outname)
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--test", action="store_true",
-                        help="small-scale test run (2 prompts, 3 samples each)")
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="small-scale test run (2 prompts, 3 samples each)"
+    )
     args = parser.parse_args()
     run_generation(test_mode=args.test)
