@@ -34,9 +34,8 @@ def run_generation(test_mode: bool):
         "ctrlg/hmm_gpt2-large_common-gen_4096"
     ).to(device)
     print("HMM loaded")
-    hmm.vocab_size = tokenizer.vocab_size
 
-    # Build DFA on exact subword tokens + word-count constraint
+    # Build DFA on exact subword tokens only (no word-count automaton)
     agentic = ["ambitious", "assertive", "bold", "confident",
                "decisive", "independent", "self", "reliant",
                "competitive", "adventurous"]
@@ -46,7 +45,7 @@ def run_generation(test_mode: bool):
                 "helpful", "loyal"]
 
     print("Building DFA for agentic + communal constraints only")
-    vocab_size = tokenizer.vocab_size
+    vocab_size = hmm.vocab_size             # use HMM’s own vocab_size
     acb = ctrlg.AhoCorasickBuilder(vocab_size)
 
     pats_a = [tokenizer.encode(w, add_special_tokens=False) for w in agentic]
