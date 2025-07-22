@@ -109,8 +109,8 @@ def run_hybrid_ctrlg():
 
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
-                    prefix_ids=prompt_ids,
-                    suffix_ids=[period_id],
+                    prompt_ids,                    # positional prefix IDs
+                    suffix_ids=[period_id],        # still named
                     eos_token_id=tokenizer.eos_token_id
                 )
 
