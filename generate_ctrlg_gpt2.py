@@ -25,8 +25,8 @@ COMMUNAL = [
 
 NUM_SAMPLES        = 500
 TEMP, TOP_P        = 1.0, 0.95
-MIN_WORDS, MAX_WORDS = 8, 15        # word‐length constraints
-OUTPUT_CSV         = "ctrlg_hybrid_completions.csv"
+MIN_WORDS, MAX_WORDS = 8, 15        # word-length constraints
+OUTPUT_CSV         = "ctrlg_prefix_completions.csv"
 
 # ─── UTILITIES ───────────────────────────────────────────────────────────────────
 def clean_text(text):
@@ -37,16 +37,20 @@ def count_words(text: str) -> int:
     return len(text.strip().split())
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────────
-def run_hybrid_ctrlg():
-    print("STARTING hybrid Ctrl-G generation", flush=True)
+def run_prefix_ctrlg():
+    print("STARTING prefix-only Ctrl-G generation", flush=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device, flush=True)
 
     # 1) Load model + tokenizer + HMM
     print("Loading model, tokenizer, and HMM...", flush=True)
-    model = AutoModelForCausalLM.from_pretrained("ctrlg/gpt2-large_common-gen").to(device).eval()
+    model = AutoModelForCausalLM.from_pretrained(
+        "ctrlg/gpt2-large_common-gen"
+    ).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained("ctrlg/gpt2-large_common-gen")
-    hmm = ctrlg.HMM.from_pretrained("ctrlg/hmm_gpt2-large_common-gen_4096").to(device)
+    hmm = ctrlg.HMM.from_pretrained(
+        "ctrlg/hmm_gpt2-large_common-gen_4096"
+    ).to(device)
     print("Loaded.", flush=True)
 
     # 2) Build DFA for ≥1 agentic & ≥1 communal
@@ -63,18 +67,15 @@ def run_hybrid_ctrlg():
 
     # 4) Open CSV
     with open(OUTPUT_CSV, "w", newline="", encoding="utf8", buffering=1) as fout:
-        writer = csv.DictWriter(fout, fieldnames=["occupation","sample","label"])
+        writer = csv.DictWriter(fout, fieldnames=["occupation", "sample", "label"])
         writer.writeheader()
 
         total_runs = len(OCCUPATIONS) * NUM_SAMPLES
         run_counter = 0
 
         for occ in OCCUPATIONS:
-            instruction = (
-                f"Complete the following sentence in natural, coherent English "
-                f"(8–15 words long):\n\"The {occ} was\""
-            )
-            prompt_ids = tokenizer.encode(instruction, add_special_tokens=False)
+            prefix = f"The {occ} was"
+            prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
             print(f"\n=== Occupation: {occ} ===", flush=True)
 
             collected = 0
@@ -86,14 +87,14 @@ def run_hybrid_ctrlg():
                     hmm, dfa,
                     min_new_tokens=MIN_WORDS,
                     max_new_tokens=MAX_WORDS,
-                    prompt_ids=prompt_ids,
-                    prefix_ids=[],            # enforce only via DFA
+                    prompt_ids=[],        # no instruction prompt
+                    prefix_ids=prefix_ids,
                     suffix_ids=[period_id]
                 )
                 proc.hmm_batch_size = bs
 
                 outputs = model.generate(
-                    input_ids=torch.tensor([prompt_ids], device=device),
+                    input_ids=torch.tensor([prefix_ids], device=device),
                     do_sample=True,
                     temperature=TEMP,
                     top_p=TOP_P,
@@ -109,15 +110,15 @@ def run_hybrid_ctrlg():
 
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
-                    prompt_ids,                    # positional prefix IDs
-                    suffix_ids=[period_id],        # still named
+                    prefix_ids,
+                    suffix_ids=[period_id],
                     eos_token_id=tokenizer.eos_token_id
                 )
 
                 for seq in gens:
                     text = clean_text(tokenizer.decode(seq, skip_special_tokens=True))
                     wc = count_words(text)
-                    label = "Hybrid Ctrl-G"
+                    label = "Ctrl-G GPT-2"
                     if not (MIN_WORDS <= wc <= MAX_WORDS):
                         label += " [length OOB]"
 
@@ -128,7 +129,7 @@ def run_hybrid_ctrlg():
                     if run_counter % 50 == 0:
                         print(f"Run {run_counter}/{total_runs}: {text}", flush=True)
 
-    print(f"\nDone! Results saved to {OUTPUT_CSV}", flush=True)
+    print(f"\nAll occupations done. Results saved to '{OUTPUT_CSV}'", flush=True)
 
 if __name__ == "__main__":
-    run_hybrid_ctrlg()
+    run_prefix_ctrlg()
