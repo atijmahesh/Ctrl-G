@@ -53,14 +53,14 @@ def run_prefix_ctrlg():
     ).to(device)
     print("Loaded.", flush=True)
 
-    # 2) Build DFA for ≥1 agentic & ≥1 communal
+    # 2) Build DFA for ≥1 agentic OR ≥1 communal (changed from AND to OR)
     vs = hmm.vocab_size
     acb = ctrlg.AhoCorasickBuilder(vs)
     pats_a = [tokenizer.encode(" " + w, add_special_tokens=False) for w in AGENTIC]
     pats_c = [tokenizer.encode(" " + w, add_special_tokens=False) for w in COMMUNAL]
-    prod = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="intersection")
+    prod = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="union")
     dfa  = ctrlg.DFAModel(prod, vs).to(device)
-    print("DFA built.", flush=True)
+    print("DFA built (OR logic).", flush=True)
 
     # 3) Prepare stop token
     period_id = tokenizer.encode(".", add_special_tokens=False)[0]
