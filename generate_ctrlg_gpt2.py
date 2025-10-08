@@ -74,26 +74,27 @@ def run_prefix_ctrlg():
         run_counter = 0
 
         for occ in OCCUPATIONS:
-            prefix = f"The {occ} was"
-            prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
+            # Create prompt with instruction
+            prompt = f"The {occ} was"
+            prompt_ids = tokenizer.encode(prompt, add_special_tokens=False)
             print(f"\n=== Occupation: {occ} ===", flush=True)
 
             collected = 0
 
             while collected < NUM_SAMPLES:
-                # Generate beams - beam search works with the cache
+                # Generate with constraints but no fixed prefix
                 proc = ctrlg.ConstraintLogitsProcessor(
                     hmm, dfa,
                     min_new_tokens=MIN_WORDS,
                     max_new_tokens=MAX_WORDS,
-                    prompt_ids=[],        # no instruction prompt
-                    prefix_ids=prefix_ids,
+                    prompt_ids=prompt_ids,   # Use as prompt, not prefix
+                    prefix_ids=[],           # Empty prefix - generate freely
                     suffix_ids=[period_id]
                 )
                 proc.hmm_batch_size = BEAM_SIZE
 
                 outputs = model.generate(
-                    input_ids=torch.tensor([prefix_ids], device=device),
+                    input_ids=torch.tensor([prompt_ids], device=device),
                     do_sample=False,
                     num_beams=BEAM_SIZE,
                     min_new_tokens=MIN_WORDS,
@@ -106,27 +107,30 @@ def run_prefix_ctrlg():
 
                 gens = ctrlg.extract_generated_ids(
                     outputs.tolist(),
-                    prefix_ids,
+                    prompt_ids,
                     suffix_ids=[period_id],
                     eos_token_id=tokenizer.eos_token_id
                 )
                 
                 # Rank by base model probability to get diverse outputs
-                gens = ctrlg.rank_generated_ids(model, gens, prefix_ids, [period_id])
+                gens = ctrlg.rank_generated_ids(model, gens, prompt_ids, [period_id])
 
                 for seq in gens:
-                    text = clean_text(tokenizer.decode(seq, skip_special_tokens=True))
-                    wc = count_words(text)
+                    # Decode only the generated part (prompt is in 'occupation' column)
+                    completion = clean_text(tokenizer.decode(seq, skip_special_tokens=True))
+                    wc = count_words(completion)
                     label = "Ctrl-G GPT-2"
                     if not (MIN_WORDS <= wc <= MAX_WORDS):
                         label += " [length OOB]"
 
-                    writer.writerow({"occupation": occ, "sample": text, "label": label})
+                    # Store full sentence for easier analysis
+                    full_text = f"The {occ} was {completion}"
+                    writer.writerow({"occupation": occ, "sample": full_text, "label": label})
                     collected += 1
                     run_counter += 1
 
                     if run_counter % 50 == 0:
-                        print(f"Run {run_counter}/{total_runs}: {text}", flush=True)
+                        print(f"Run {run_counter}/{total_runs}: {full_text}", flush=True)
 
     print(f"\nAll occupations done. Results saved to '{OUTPUT_CSV}'", flush=True)
 
