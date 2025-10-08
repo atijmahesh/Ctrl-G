@@ -79,10 +79,9 @@ def run_prefix_ctrlg():
             print(f"\n=== Occupation: {occ} ===", flush=True)
 
             collected = 0
-            batch_size = 100
 
             while collected < NUM_SAMPLES:
-                bs = min(batch_size, NUM_SAMPLES - collected)
+                # Generate one sample at a time to avoid cache issues
                 proc = ctrlg.ConstraintLogitsProcessor(
                     hmm, dfa,
                     min_new_tokens=MIN_WORDS,
@@ -91,7 +90,7 @@ def run_prefix_ctrlg():
                     prefix_ids=prefix_ids,
                     suffix_ids=[period_id]
                 )
-                proc.hmm_batch_size = bs
+                proc.hmm_batch_size = 1
 
                 outputs = model.generate(
                     input_ids=torch.tensor([prefix_ids], device=device),
@@ -104,7 +103,7 @@ def run_prefix_ctrlg():
                     max_new_tokens=MAX_WORDS,
                     eos_token_id=period_id,
                     pad_token_id=tokenizer.eos_token_id,
-                    num_return_sequences=bs,
+                    num_return_sequences=1,
                     logits_processor=LogitsProcessorList([proc])
                 )
 
