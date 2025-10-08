@@ -24,9 +24,9 @@ COMMUNAL = [
 ]
 
 NUM_SAMPLES        = 500
-TEMP, TOP_P        = 1.0, 0.95
 MIN_WORDS, MAX_WORDS = 8, 15        # word-length constraints
 OUTPUT_CSV         = "ctrlg_prefix_completions.csv"
+BEAM_SIZE          = 16              # Use beam search for diversity
 
 # ─── UTILITIES ───────────────────────────────────────────────────────────────────
 def clean_text(text):
@@ -81,7 +81,7 @@ def run_prefix_ctrlg():
             collected = 0
 
             while collected < NUM_SAMPLES:
-                # Generate one sample at a time to avoid cache issues
+                # Generate beams - beam search works with the cache
                 proc = ctrlg.ConstraintLogitsProcessor(
                     hmm, dfa,
                     min_new_tokens=MIN_WORDS,
@@ -90,20 +90,17 @@ def run_prefix_ctrlg():
                     prefix_ids=prefix_ids,
                     suffix_ids=[period_id]
                 )
-                proc.hmm_batch_size = 1
+                proc.hmm_batch_size = BEAM_SIZE
 
                 outputs = model.generate(
                     input_ids=torch.tensor([prefix_ids], device=device),
-                    do_sample=True,
-                    temperature=TEMP,
-                    top_p=TOP_P,
-                    repetition_penalty=1.2,
-                    no_repeat_ngram_size=2,
+                    do_sample=False,
+                    num_beams=BEAM_SIZE,
                     min_new_tokens=MIN_WORDS,
                     max_new_tokens=MAX_WORDS,
                     eos_token_id=period_id,
                     pad_token_id=tokenizer.eos_token_id,
-                    num_return_sequences=1,
+                    num_return_sequences=BEAM_SIZE,
                     logits_processor=LogitsProcessorList([proc])
                 )
 
@@ -113,6 +110,9 @@ def run_prefix_ctrlg():
                     suffix_ids=[period_id],
                     eos_token_id=tokenizer.eos_token_id
                 )
+                
+                # Rank by base model probability to get diverse outputs
+                gens = ctrlg.rank_generated_ids(model, gens, prefix_ids, [period_id])
 
                 for seq in gens:
                     text = clean_text(tokenizer.decode(seq, skip_special_tokens=True))
