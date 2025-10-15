@@ -25,7 +25,7 @@ COMMUNAL = [
 
 NUM_SAMPLES        = 500
 MIN_WORDS, MAX_WORDS = 8, 15        # word-length constraints
-OUTPUT_CSV         = "ctrlg_prefix_completions.csv"
+OUTPUT_CSV         = "ctrlg_and_completions.csv"
 BEAM_SIZE          = 16              # Use beam search for diversity
 
 # ─── UTILITIES ───────────────────────────────────────────────────────────────────
@@ -53,14 +53,14 @@ def run_prefix_ctrlg():
     ).to(device)
     print("Loaded.", flush=True)
 
-    # 2) Build DFA for ≥1 agentic OR ≥1 communal (changed from AND to OR)
+    # 2) Build DFA for ≥1 agentic AND ≥1 communal (intersection mode)
     vs = hmm.vocab_size
     acb = ctrlg.AhoCorasickBuilder(vs)
     pats_a = [tokenizer.encode(" " + w, add_special_tokens=False) for w in AGENTIC]
     pats_c = [tokenizer.encode(" " + w, add_special_tokens=False) for w in COMMUNAL]
-    prod = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="union")
+    prod = ctrlg.DFA_prod([acb.build(pats_a), acb.build(pats_c)], mode="intersection")
     dfa  = ctrlg.DFAModel(prod, vs).to(device)
-    print("DFA built (OR logic).", flush=True)
+    print("DFA built (AND logic).", flush=True)
 
     # 3) Prepare stop token
     period_id = tokenizer.encode(".", add_special_tokens=False)[0]
@@ -116,6 +116,9 @@ def run_prefix_ctrlg():
                 gens = ctrlg.rank_generated_ids(model, gens, prompt_ids, [period_id])
 
                 for seq in gens:
+                    if collected >= NUM_SAMPLES:
+                        break  # Stop at exactly 500 per occupation
+                        
                     # Decode only the generated part (prompt is in 'occupation' column)
                     completion = clean_text(tokenizer.decode(seq, skip_special_tokens=True))
                     wc = count_words(completion)
